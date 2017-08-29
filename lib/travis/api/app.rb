@@ -100,21 +100,27 @@ module Travis::Api
         #   use StackProf::Middleware, enabled: true, save_every: 1, mode: mode
         # end
 
+        use Rack::Config do |env|
+          env['metriks.request.start'] ||= Time.now.utc
+
+          Travis::Honeycomb.clear
+          Travis::Honeycomb.context.add('x_request_id', env['HTTP_X_REQUEST_ID'])
+        end
+
         use Travis::Api::App::Middleware::RequestId
         use Travis::Api::App::Middleware::ErrorHandler
 
         extend StackInstrumentation
         use Travis::Api::App::Middleware::Skylight
-        use(Rack::Config) { |env| env['metriks.request.start'] ||= Time.now.utc }
 
-        Travis::Honeycomb.rpc_setup
+        use Rack::Config do |env|
+          if env['HTTP_HONEYCOMB_OVERRIDE'] == 'true'
+            Travis::Honeycomb.override!
+          end
+        end
 
-        if ENV['HONEYCOMB_ENABLED_FOR_DYNOS']&.split(' ')&.include?(ENV['DYNO'])
-          Travis.logger.info 'honeycomb enabled'
-          use Travis::Api::App::Middleware::Honeycomb,
-            writekey: ENV['HONEYCOMB_WRITEKEY'],
-            dataset: ENV['HONEYCOMB_DATASET'],
-            sample_rate: ENV['HONEYCOMB_SAMPLE_RATE']&.to_i || 1
+        if Travis::Honeycomb.api_requests.enabled?
+          use Travis::Api::App::Middleware::Honeycomb
         end
 
         use Travis::Api::App::Cors # if Travis.env == 'development' ???
@@ -233,6 +239,8 @@ module Travis::Api
 
       def self.setup_monitoring
         Travis::Api::App::ErrorHandling.setup
+
+        Travis::Honeycomb.setup
 
         Travis::LogSubscriber::ActiveRecordMetrics.attach
         Travis::Notification.setup(instrumentation: false)
